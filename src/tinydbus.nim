@@ -1,6 +1,6 @@
 ## nim dbus protocol implementation.
 
-import std/[os, strutils, nativesockets]
+import std/[os, strutils, nativesockets, macrocache, macros, sequtils]
 
 when defined(posix):
   import std/posix
@@ -475,7 +475,7 @@ proc receive*(conn: BusConnection): Message =
     recvAll(conn.fd, addr fullMsg[16], totalSize - 16)
   deserialize(fullMsg)
 
-proc call*(conn: BusConnection; msg: Message): Message =
+proc rawCall*(conn: BusConnection; msg: Message): Message =
   let serial = conn.send(msg)
   while true:
     let reply = conn.receive()
@@ -488,6 +488,73 @@ proc call*(conn: BusConnection; msg: Message): Message =
           errDetail.add ": " & br.read[:string]()
         raise newException(DbusError, errDetail)
       return reply
+
+# Compile-time intercept support:
+
+const
+  interceptVersion = CacheCounter"tinydbus.interceptVer"
+  generatedVersion = CacheCounter"tinydbus.generatedVer"
+  resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
+  interceptRegistry* = CacheSeq"tinydbus.interceptors"
+
+macro addIntercept*(dest, path, iface, member: static string;
+                    handler: typed) =
+  interceptVersion.inc()
+  interceptRegistry.add newTree(nnkTupleConstr,
+    newLit(dest), newLit(path), newLit(iface), newLit(member), handler)
+
+proc matchField(conds: var seq[NimNode]; msgSym, field, value: NimNode) =
+  if value.strVal.len > 0:
+    conds.add infix(newDotExpr(msgSym, field), "==", value)
+
+macro call*(conn: BusConnection; msg: Message): Message =
+  if interceptRegistry.len == 0:
+    return newCall(bindSym"rawCall", conn, msg)
+
+  if interceptVersion.value == generatedVersion.value:
+    newCall(resolveCallSyms[^1], conn, msg)
+  else:
+    generatedVersion.inc(
+      interceptVersion.value -
+      generatedVersion.value)
+    let implName = genSym(nskProc, "resolveCallImpl")
+    resolveCallSyms.add implName
+    let connParam = ident"conn"
+    let msgParam = ident"msg"
+    var ifStmt = newNimNode(nnkIfStmt)
+
+    for entry in interceptRegistry:
+      let (dest, path, iface, member, handler) =
+        (entry[0], entry[1], entry[2], entry[3], entry[4])
+
+      var conds: seq[NimNode] = @[]
+      conds.matchField(msgParam, ident"destination", dest)
+      conds.matchField(msgParam, ident"path", path)
+      conds.matchField(msgParam, ident"iface", iface)
+      conds.matchField(msgParam, ident"member", member)
+
+      let cond =
+        if conds.len == 0: newLit(true)
+        else: conds.foldl(infix(a, "and", b))
+
+      let action = newCall(handler, msgParam)
+      ifStmt.add newTree(nnkElifBranch, cond, action)
+
+    ifStmt.add newTree(
+      nnkElse,
+      newCall(bindSym"rawCall", connParam, msgParam))
+
+    let procDef = newProc(
+      name = implName,
+      params = [bindSym"Message",
+                newIdentDefs(connParam, bindSym"BusConnection"),
+                newIdentDefs(msgParam, bindSym"Message")],
+      body = ifStmt)
+
+    newStmtList(procDef, newCall(implName, conn, msg))
+
+macro callSym*(): NimNode =
+  resolveCallSyms[^1]
 
 # Basic helpers:
 
