@@ -1,6 +1,6 @@
 ## send a desktop notification via org.freedesktop.Notifications.
 
-import tinydbus
+import pkg/tinydbus
 
 proc main() =
   let (conn, _) = openSessionBus()
@@ -15,7 +15,7 @@ proc main() =
 
   var body = initBodyBuilder()
   body.add "tinydbus"       # app_name
-  body.add 0                # replaces_id
+  body.add 0'u32             # replaces_id
   body.add ""               # app_icon
   body.add "Hello!"         # summary
   body.add "Sent from tinydbus example" # body
@@ -25,7 +25,7 @@ proc main() =
   let hints = body.addArrayBegin("{sv}") # empty dict
   hints.finish()
 
-  body.add -1 # expire_timeout (-1 = default)
+  body.add -1'i32 # expire_timeout (-1 = default)
 
   msg.setBody(body)
 
