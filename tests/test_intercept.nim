@@ -30,3 +30,4 @@ suite "intercept API":
     assert reply.kind == mtMethodReturn
     var br = initBodyReader(reply.body, reply.signature)
     check br.read[:uint32]() == 42'u32
+

@@ -6,3 +6,4 @@ srcDir        = "src"
 
 feature "tests":
   requires "unittest2"
+

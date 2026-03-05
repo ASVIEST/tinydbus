@@ -571,3 +571,4 @@ proc openSessionBus*(): (BusConnection, string) =
 proc openSystemBus*(): (BusConnection, string) =
   let conn = connectSystem()
   (conn, conn.hello())
+

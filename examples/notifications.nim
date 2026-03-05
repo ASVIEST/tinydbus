@@ -34,3 +34,4 @@ proc main() =
   echo "Notification id: ", br.read[:uint32]()
 
 main()
+

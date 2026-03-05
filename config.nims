@@ -9,3 +9,4 @@ task test, "Run tests":
   for f in listFiles("tests"):
     if f.endsWith(".nim"):
       selfExec "c -r " & f
+
