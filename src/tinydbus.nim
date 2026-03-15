@@ -476,7 +476,7 @@ proc receive*(conn: BusConnection): Message =
   deserialize(fullMsg)
 
 proc rawCall*(conn: BusConnection; msg: Message): Message =
-  if conn == nil:
+  if unlikely(conn == nil):
     raise newException(DbusError, "rawCall: connection is nil")
   let serial = conn.send(msg)
   while true:
