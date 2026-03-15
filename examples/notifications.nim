@@ -3,7 +3,7 @@
 import pkg/tinydbus
 
 proc main() =
-  let (conn, _) = openSessionBus()
+  var (conn, _) = openSessionBus()
   defer: conn.close()
 
   let msg = initMethodCallMsg(

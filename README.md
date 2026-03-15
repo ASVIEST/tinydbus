@@ -16,7 +16,7 @@ nimble install https://github.com/ASVIEST/tinydbus
 ```nim
 import pkg/tinydbus
 
-let (conn, _) = openSessionBus()
+var (conn, _) = openSessionBus()
 defer: conn.close()
 
 let msg = initMethodCallMsg(

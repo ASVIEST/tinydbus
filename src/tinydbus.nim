@@ -635,9 +635,11 @@ proc hello*(conn: var BusConnection): string =
 
 proc openSessionBus*(): (BusConnection, string) =
   var conn = connectSession()
-  (conn, conn.hello())
+  let name = conn.hello()
+  (conn, name)
 
 proc openSystemBus*(): (BusConnection, string) =
   var conn = connectSystem()
-  (conn, conn.hello())
+  let name = conn.hello()
+  (conn, name)
 
