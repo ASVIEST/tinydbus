@@ -2,6 +2,10 @@
 
 import std/[os, strutils, nativesockets, macrocache, macros, sequtils]
 
+const useValidationLayer* =
+  not defined(tinydbus.disableValidation) and
+  fileExists(currentSourcePath().parentDir / "validation_layer.nim")
+
 when defined(posix):
   import std/posix
 
@@ -48,6 +52,9 @@ type
     nextSerial: uint32
 
   DbusError* = object of CatchableError
+
+when useValidationLayer:
+  include validation_layer
 
 proc `$`*(s: ObjectPath): string {.borrow.}
 proc `$`*(s: DbusSignature): string {.borrow.}
@@ -112,7 +119,10 @@ type Reader = object
   bigEndian: bool
 
 proc alignTo(r: var Reader; n: int) {.inline.} =
-  r.pos += (n - ((r.baseOffset + r.pos) mod n)) mod n
+  let padding = (n - ((r.baseOffset + r.pos) mod n)) mod n
+  when useValidationLayer:
+    validatePadding(r.data, r.pos, padding)
+  r.pos += padding
 
 proc checkRead(r: Reader; n: int) {.inline.} =
   if r.pos + n > r.data.len:
@@ -140,7 +150,11 @@ proc get(r: var Reader; T: type uint64): uint64 {.inline.} = r.getInt(uint64, 8)
 proc get(r: var Reader; T: type int16): int16 {.inline.} = cast[int16](r.get(uint16))
 proc get(r: var Reader; T: type int32): int32 {.inline.} = cast[int32](r.get(uint32))
 proc get(r: var Reader; T: type int64): int64 {.inline.} = cast[int64](r.get(uint64))
-proc get(r: var Reader; T: type bool): bool {.inline.} = r.get(uint32) != 0
+proc get(r: var Reader; T: type bool): bool {.inline.} =
+  let v = r.get(uint32)
+  when useValidationLayer:
+    validateBoolean(v)
+  v != 0
 proc get(r: var Reader; T: type float64): float64 {.inline.} = cast[float64](r.get(uint64))
 
 proc getStr(r: var Reader; lenSize: static int): string =
@@ -195,10 +209,15 @@ proc addArrayBegin*(b: var BodyBuilder; elementSig: string): ArrayBuilder =
 
 proc finish*(ab: ArrayBuilder) =
   ab.parent.arrayDepth -= 1
-  ab.parent.w.putAt(ab.lenPos, uint32(ab.parent.w.buf.len - ab.dataStart))
+  let arrayLen = uint32(ab.parent.w.buf.len - ab.dataStart)
+  when useValidationLayer:
+    validateArrayLength(arrayLen)
+  ab.parent.w.putAt(ab.lenPos, arrayLen)
 
 proc addVariant*(b: var BodyBuilder; valueSig: string;
                  value: proc(b: var BodyBuilder)) =
+  when useValidationLayer:
+    validateVariantSignature(valueSig)
   if b.arrayDepth == 0: b.sig.add 'v'
   b.w.put(DbusSignature(valueSig))
   let savedSig = b.sig
@@ -228,15 +247,19 @@ proc read*[T](br: var BodyReader): T =
 
 proc readArrayBegin*(br: var BodyReader; elementSig: string): int =
   br.sigPos += 1 + elementSig.len
-  let length = int(br.r.get(uint32))
+  let length = br.r.get(uint32)
+  when useValidationLayer:
+    validateArrayLength(length)
   if elementSig.len > 0: br.r.alignTo(alignmentOf(elementSig[0]))
-  br.r.pos + length
+  br.r.pos + int(length)
 
 proc readArrayHasMore*(br: BodyReader; endPos: int): bool {.inline.} = br.r.pos < endPos
 
 proc readVariantSignature*(br: var BodyReader): string =
   br.sigPos += 1
-  string(br.r.get(DbusSignature))
+  result = string(br.r.get(DbusSignature))
+  when useValidationLayer:
+    validateVariantSignature(result)
 
 proc readStructBegin*(br: var BodyReader) =
   br.sigPos += 1
@@ -246,10 +269,23 @@ proc readStructEnd*(br: var BodyReader) {.inline.} = br.sigPos += 1
 proc atEnd*(br: BodyReader): bool {.inline.} = br.r.pos >= br.r.data.len
 
 proc initMethodCallMsg*(destination, path, iface, member: string): Message =
+  when useValidationLayer:
+    validateObjectPath(path)
+    validateBusName(destination)
+    validateInterfaceName(iface)
+    validateLocalInterface(iface)
+    validateLocalPath(path)
+    validateMemberName(member)
   Message(kind: mtMethodCall, destination: destination,
           path: path, iface: iface, member: member)
 
 proc initSignalMsg*(path, iface, member: string): Message =
+  when useValidationLayer:
+    validateObjectPath(path)
+    validateInterfaceName(iface)
+    validateLocalInterface(iface)
+    validateLocalPath(path)
+    validateMemberName(member)
   Message(kind: mtSignal, path: path, iface: iface, member: member)
 
 proc initMethodReturnMsg*(replyTo: Message): Message =
@@ -257,11 +293,15 @@ proc initMethodReturnMsg*(replyTo: Message): Message =
           destination: replyTo.sender)
 
 proc initErrorMsg*(replyTo: Message; name: string): Message =
+  when useValidationLayer:
+    validateErrorName(name)
   Message(kind: mtError, replySerial: replyTo.serial,
           destination: replyTo.sender, errorName: name)
 
 proc setBody*(msg: Message; builder: BodyBuilder) =
   let (sig, data) = builder.finish()
+  when useValidationLayer:
+    validateSignature(sig)
   msg.signature = sig
   msg.body = data
 
@@ -445,10 +485,18 @@ proc connectSystem*(): BusConnection =
   connectBus("unix:path=/var/run/dbus/system_bus_socket")
 
 proc send*(conn: var BusConnection; msg: Message): uint32 =
+  when useValidationLayer:
+    case msg.kind
+    of mtMethodCall, mtSignal: validateCommonFields(msg)
+    of mtError: validateErrorMsg(msg)
+    of mtMethodReturn, mtInvalid: validateRequiredHeaders(msg)
   let serial = conn.nextSerial
   conn.nextSerial += 1
   msg.serial = serial
-  sendAll(conn.fd, serialize(msg, serial))
+  let data = serialize(msg, serial)
+  when useValidationLayer:
+    validateMessageLength(data.len)
+  sendAll(conn.fd, data)
   serial
 
 proc readU32(data: openArray[byte]; off: int; bigEndian: bool): uint32 {.inline.} =
@@ -469,6 +517,8 @@ proc receive*(conn: BusConnection): Message =
 
   let fieldsPadded = int(fieldsLen) + ((8 - (int(fieldsLen) mod 8)) mod 8)
   let totalSize = 16 + fieldsPadded + int(bodyLen)
+  when useValidationLayer:
+    validateMessageLength(totalSize)
   var fullMsg = newSeq[byte](totalSize)
   copyMem(addr fullMsg[0], addr hdr[0], 16)
   if totalSize > 16:
