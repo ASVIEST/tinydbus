@@ -24,7 +24,7 @@ suite "intercept API":
     msg.sender = ":1.0"
 
     # call fakeRead without needing a real connection
-    let conn: BusConnection = nil
+    var conn = BusConnection()
     let reply = conn.call(msg)
 
     assert reply.kind == mtMethodReturn

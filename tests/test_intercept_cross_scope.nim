@@ -24,7 +24,7 @@ suite "intercept cross-scope":
       msg.serial = 1
       msg.sender = ":1.0"
 
-      let conn: BusConnection = nil
+      var conn: BusConnection
       let reply = conn.call(msg)
 
       check reply.kind == mtMethodReturn
@@ -45,7 +45,7 @@ suite "intercept cross-scope":
       msg.serial = 2
       msg.sender = ":1.0"
 
-      let conn: BusConnection = nil
+      var conn = BusConnection()
       let reply = conn.call(msg)
 
       check reply.kind == mtMethodReturn

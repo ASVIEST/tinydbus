@@ -43,8 +43,8 @@ type
     replySerial*: uint32
     body*: seq[byte]
 
-  BusConnection* = ref object
-    fd: SocketHandle
+  BusConnection* = object
+    fd: SocketHandle = SocketHandle(-1) # osInvalidSocket
     nextSerial: uint32
 
   DbusError* = object of CatchableError
@@ -420,12 +420,12 @@ proc authenticate(fd: SocketHandle) =
 
 
 
-proc close*(conn: BusConnection) =
+proc close*(conn: var BusConnection) =
   if conn.fd != osInvalidSocket:
     conn.fd.close()
     conn.fd = osInvalidSocket
 
-proc `=destroy`(conn: typeof(BusConnection()[])) =
+proc `=destroy`(conn: BusConnection) =
   if conn.fd != osInvalidSocket:
     conn.fd.close()
 
@@ -444,7 +444,7 @@ proc connectSession*(): BusConnection =
 proc connectSystem*(): BusConnection =
   connectBus("unix:path=/var/run/dbus/system_bus_socket")
 
-proc send*(conn: BusConnection; msg: Message): uint32 =
+proc send*(conn: var BusConnection; msg: Message): uint32 =
   let serial = conn.nextSerial
   conn.nextSerial += 1
   msg.serial = serial
@@ -475,9 +475,7 @@ proc receive*(conn: BusConnection): Message =
     recvAll(conn.fd, addr fullMsg[16], totalSize - 16)
   deserialize(fullMsg)
 
-proc rawCall*(conn: BusConnection; msg: Message): Message =
-  if unlikely(conn == nil):
-    raise newException(DbusError, "rawCall: connection is nil")
+proc rawCall*(conn: var BusConnection; msg: Message): Message =
   let serial = conn.send(msg)
   while true:
     let reply = conn.receive()
@@ -501,7 +499,7 @@ const
 when defined(tinydbus.runtimeDispatch):
   # nimcall cheaper than {.closure.} btw
   var callImpl: proc(
-    conn: BusConnection; msg: Message): Message {.nimcall.} = rawCall
+    conn: var BusConnection; msg: Message): Message {.nimcall.} = rawCall
 else:
   const resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
 
@@ -515,7 +513,7 @@ proc matchField(conds: var seq[NimNode]; msgSym, field, value: NimNode) =
   if value.strVal.len > 0:
     conds.add infix(newDotExpr(msgSym, field), "==", value)
 
-macro call*(conn: BusConnection; msg: Message): Message =
+macro call*(conn: var BusConnection; msg: Message): Message =
   if interceptRegistry.len == 0:
     return newCall(
       when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
@@ -560,7 +558,7 @@ macro call*(conn: BusConnection; msg: Message): Message =
     let procDef = newProc(
       name = implName,
       params = [bindSym"Message",
-                newIdentDefs(connParam, bindSym"BusConnection"),
+                newIdentDefs(connParam, newTree(nnkVarTy, bindSym"BusConnection")),
                 newIdentDefs(msgParam, bindSym"Message")],
       body = ifStmt)
 
@@ -579,17 +577,17 @@ else:
 
 # Basic helpers:
 
-proc hello*(conn: BusConnection): string =
+proc hello*(conn: var BusConnection): string =
   let msg = initMethodCallMsg("org.freedesktop.DBus", "/org/freedesktop/DBus",
                           "org.freedesktop.DBus", "Hello")
   var br = initBodyReader(conn.call(msg).body, "s")
   br.read[:string]()
 
 proc openSessionBus*(): (BusConnection, string) =
-  let conn = connectSession()
+  var conn = connectSession()
   (conn, conn.hello())
 
 proc openSystemBus*(): (BusConnection, string) =
-  let conn = connectSystem()
+  var conn = connectSystem()
   (conn, conn.hello())
 
