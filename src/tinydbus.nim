@@ -494,8 +494,14 @@ proc rawCall*(conn: BusConnection; msg: Message): Message =
 const
   interceptVersion = CacheCounter"tinydbus.interceptVer"
   generatedVersion = CacheCounter"tinydbus.generatedVer"
-  resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
   interceptRegistry* = CacheSeq"tinydbus.interceptors"
+
+when defined(tinydbus.runtimeDispatch):
+  # nimcall cheaper than {.closure.} btw
+  var callImpl: proc(
+    conn: BusConnection; msg: Message): Message {.nimcall.} = rawCall
+else:
+  const resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
 
 macro addIntercept*(dest, path, iface, member: static string;
                     handler: typed) =
@@ -509,16 +515,21 @@ proc matchField(conds: var seq[NimNode]; msgSym, field, value: NimNode) =
 
 macro call*(conn: BusConnection; msg: Message): Message =
   if interceptRegistry.len == 0:
-    return newCall(bindSym"rawCall", conn, msg)
-
+    return newCall(
+      when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
+      else: bindSym"rawCall", conn, msg)
+  
   if interceptVersion.value == generatedVersion.value:
-    newCall(resolveCallSyms[^1], conn, msg)
+    newCall(
+      when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
+      else: resolveCallSyms[^1], conn, msg)
   else:
     generatedVersion.inc(
       interceptVersion.value -
       generatedVersion.value)
     let implName = genSym(nskProc, "resolveCallImpl")
-    resolveCallSyms.add implName
+    when not defined(tinydbus.runtimeDispatch):
+      resolveCallSyms.add implName
     let connParam = ident"conn"
     let msgParam = ident"msg"
     var ifStmt = newNimNode(nnkIfStmt)
@@ -551,10 +562,18 @@ macro call*(conn: BusConnection; msg: Message): Message =
                 newIdentDefs(msgParam, bindSym"Message")],
       body = ifStmt)
 
-    newStmtList(procDef, newCall(implName, conn, msg))
+    when defined(tinydbus.runtimeDispatch):
+      newStmtList(
+        procDef,
+        newAssignment(bindSym"callImpl", implName),
+        newCall(bindSym"callImpl", conn, msg))
+    else:
+      newStmtList(procDef, newCall(implName, conn, msg))
 
-macro callSym*(): NimNode =
-  resolveCallSyms[^1]
+when defined(tinydbus.runtimeDispatch):
+  macro callSym*(): NimNode = bindSym"callImpl"
+else:
+  macro callSym*(): NimNode = resolveCallSyms[^1]
 
 # Basic helpers:
 
