@@ -86,3 +86,4 @@ addIntercept(
 # flags:
 `-d:tinydbus.runtimeDispatch`: when this flag is enabled, interceptors declared after the `proc` will work. This means you can create a `proc` that uses a `call` and add interceptors after it; without this flag, you would have to use a `template` instead of a `proc`. The downside is the added realtime overhead due to calling the `proc` by address.
 
+`-d:tinydbus.disableValidation`: disables validation layer, it makes tinydbus faster. The validation layer causes a significant slowdown. It is recommended to disable it for release builds if you need performance (15-25% without request batching and up to 25-34% with batching). In a synthetic test without real requests, the code slows down by up to 12 times. However, the validation layer is enabled by default because it makes the code safer, and the performance loss is not that significant considering that IPC round-trip takes most of the time.
