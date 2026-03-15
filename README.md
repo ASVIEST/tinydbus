@@ -84,5 +84,5 @@ addIntercept(
 ```
 
 # flags:
-`-d:tinydbus.runtimeDispatch`: when this flag is enabled, interceptors declared after the `proc` will work. This means you can create a 'proc' that uses a `call` and add interceptors after it; without this flag, you would have to use a `template` instead of a `proc`. The downside is the added realtime overhead due to calling the `proc` by address.
+`-d:tinydbus.runtimeDispatch`: when this flag is enabled, interceptors declared after the `proc` will work. This means you can create a `proc` that uses a `call` and add interceptors after it; without this flag, you would have to use a `template` instead of a `proc`. The downside is the added realtime overhead due to calling the `proc` by address.
 
