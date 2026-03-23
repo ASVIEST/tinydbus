@@ -168,18 +168,18 @@ proc get(r: var Reader; T: type string): string {.inline.} = r.getStr(4)
 proc get(r: var Reader; T: type ObjectPath): ObjectPath {.inline.} = ObjectPath(r.getStr(4))
 proc get(r: var Reader; T: type DbusSignature): DbusSignature {.inline.} = DbusSignature(r.getStr(1))
 
-proc sigChar(T: type uint8): char = 'y'
-proc sigChar(T: type bool): char = 'b'
-proc sigChar(T: type int16): char = 'n'
-proc sigChar(T: type uint16): char = 'q'
-proc sigChar(T: type int32): char = 'i'
-proc sigChar(T: type uint32): char = 'u'
-proc sigChar(T: type int64): char = 'x'
-proc sigChar(T: type uint64): char = 't'
-proc sigChar(T: type float64): char = 'd'
-proc sigChar(T: type string): char = 's'
-proc sigChar(T: type ObjectPath): char = 'o'
-proc sigChar(T: type DbusSignature): char = 'g'
+proc sigChar*(T: type uint8): char = 'y'
+proc sigChar*(T: type bool): char = 'b'
+proc sigChar*(T: type int16): char = 'n'
+proc sigChar*(T: type uint16): char = 'q'
+proc sigChar*(T: type int32): char = 'i'
+proc sigChar*(T: type uint32): char = 'u'
+proc sigChar*(T: type int64): char = 'x'
+proc sigChar*(T: type uint64): char = 't'
+proc sigChar*(T: type float64): char = 'd'
+proc sigChar*(T: type string): char = 's'
+proc sigChar*(T: type ObjectPath): char = 'o'
+proc sigChar*(T: type DbusSignature): char = 'g'
 
 type
   BodyBuilder* = object
@@ -267,6 +267,51 @@ proc readStructBegin*(br: var BodyReader) =
 
 proc readStructEnd*(br: var BodyReader) {.inline.} = br.sigPos += 1
 proc atEnd*(br: BodyReader): bool {.inline.} = br.r.pos >= br.r.data.len
+
+proc sigTypeLen*(sig: string; pos: int = 0): int =
+  ## How many characters to skip from `pos` to reach the next type.
+  ## e.g. sigTypeLen("a{sv}i", 0) = 5, sigTypeLen("a{sv}i", 5) = 1
+  case sig[pos]
+  of 'a': 1 + sigTypeLen(sig, pos + 1)
+  of '(', '{':
+    let close = if sig[pos] == '(': ')' else: '}'
+    var depth = 1
+    var i = pos + 1
+    while depth > 0:
+      if sig[i] == sig[pos]: inc depth
+      elif sig[i] == close: dec depth
+      inc i
+    i - pos
+  else: 1
+
+proc skip*(br: var BodyReader; typeSig: string) =
+  case typeSig[0]
+  of 'y', 'b', 'n', 'q', 'i', 'u', 'x', 't', 'd':
+    let a = alignmentOf(typeSig[0])
+    br.r.alignTo(a)
+    br.r.pos += a
+  of 's', 'o':
+    br.r.alignTo(4)
+    br.r.pos += int(br.r.getInt(uint32, 4)) + 1
+  of 'g':
+    br.r.pos += int(br.r.get(uint8)) + 1
+  of 'v': br.skip(br.r.getStr(1))
+  of 'a':
+    br.r.alignTo(4)
+    let arrayLen = int(br.r.get(uint32))
+    br.r.alignTo(alignmentOf(typeSig[1]))
+    br.r.pos += arrayLen
+  of '(', '{':
+    let close =
+      if typeSig[0] == '(': ')'
+      else: '}'
+    br.r.alignTo(8)
+    var pos = 1
+    while typeSig[pos] != close:
+      let len = sigTypeLen(typeSig, pos)
+      br.skip(typeSig[pos ..< pos + len])
+      pos += len
+  else: discard
 
 proc initMethodCallMsg*(destination, path, iface, member: string): Message =
   when useValidationLayer:
