@@ -520,9 +520,8 @@ proc `=wasMoved`(conn: var BusConnection) =
 
 proc `=copy`(
   dest: var BusConnection;
-  src: BusConnection) {.error: "
-BusConnection is move-only, use `ensureMove` (or `move`, but it unsafe)
- or borrow it via `var`".}
+  src: BusConnection) {.error:
+    "BusConnection is move-only, use `ensureMove` (or `move`, but it is unsafe) or borrow it via `var`".}
 
 proc `=sink`(dest: var BusConnection; src: BusConnection) =
   if dest.fd != src.fd and dest.fd != osInvalidSocket:
