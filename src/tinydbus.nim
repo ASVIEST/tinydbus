@@ -510,9 +510,25 @@ proc close*(conn: var BusConnection) =
     conn.fd.close()
     conn.fd = osInvalidSocket
 
-proc `=destroy`(conn: BusConnection) =
-  if conn.fd != osInvalidSocket:
-    conn.fd.close()
+proc `=destroy`(conn: var BusConnection) =
+  conn.close()
+
+proc `=wasMoved`(conn: var BusConnection) =
+  # XXX: we can't use osInvalidSocket bacause it have side effects, so:
+  conn.fd = SocketHandle(-1)
+  conn.nextSerial = 0
+
+proc `=copy`(
+  dest: var BusConnection;
+  src: BusConnection) {.error: "
+BusConnection is move-only, use `ensureMove` (or `move`, but it unsafe)
+ or borrow it via `var`".}
+
+proc `=sink`(dest: var BusConnection; src: BusConnection) =
+  if dest.fd != src.fd and dest.fd != osInvalidSocket:
+    dest.fd.close()
+  dest.fd = src.fd
+  dest.nextSerial = src.nextSerial
 
 proc connectBus*(address: string): BusConnection =
   let (path, isAbstract) = parseAddress(address)
@@ -681,10 +697,9 @@ proc hello*(conn: var BusConnection): string =
 proc openSessionBus*(): (BusConnection, string) =
   var conn = connectSession()
   let name = conn.hello()
-  (conn, name)
+  (move conn, name)
 
 proc openSystemBus*(): (BusConnection, string) =
   var conn = connectSystem()
   let name = conn.hello()
-  (conn, name)
-
+  (move conn, name)
