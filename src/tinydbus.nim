@@ -560,23 +560,29 @@ proc send*(conn: var BusConnection; msg: Message): uint32 =
   serial
 
 proc readU32(data: openArray[byte]; off: int; bigEndian: bool): uint32 {.inline.} =
+  result = 0
   for i in 0 ..< 4:
-    let shift = if bigEndian: (3 - i) * 8 else: i * 8
+    let shift =
+      if bigEndian: (3 - i) * 8
+      else: i * 8
+
     result = result or (uint32(data[off + i]) shl shift)
 
 proc receive*(conn: BusConnection): Message =
   var hdr: array[16, byte]
   recvAll(conn.fd, addr hdr[0], 16)
-  let be = case char(hdr[0])
+  let be =
+    case char(hdr[0])
     of 'l': false
     of 'B': true
     else: raise newException(DbusError, "invalid endian marker")
 
-  let bodyLen = readU32(hdr, 4, be)
-  let fieldsLen = readU32(hdr, 12, be)
+  let
+    bodyLen = readU32(hdr, 4, be)
+    fieldsLen = readU32(hdr, 12, be)
+    fieldsPadded = int(fieldsLen) + ((8 - (int(fieldsLen) mod 8)) mod 8)
+    totalSize = 16 + fieldsPadded + int(bodyLen)
 
-  let fieldsPadded = int(fieldsLen) + ((8 - (int(fieldsLen) mod 8)) mod 8)
-  let totalSize = 16 + fieldsPadded + int(bodyLen)
   when useValidationLayer:
     validateMessageLength(totalSize)
   var fullMsg = newSeq[byte](totalSize)
@@ -613,11 +619,15 @@ when defined(tinydbus.runtimeDispatch):
 else:
   const resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
 
-macro addIntercept*(dest, path, iface, member: static string;
-                    handler: typed) =
+macro addIntercept*(dest, path, iface, member: static string;handler: typed) =
   interceptVersion.inc()
-  interceptRegistry.add newTree(nnkTupleConstr,
-    newLit(dest), newLit(path), newLit(iface), newLit(member), handler)
+  interceptRegistry.add newTree(
+    nnkTupleConstr,
+    newLit(dest),
+    newLit(path),
+    newLit(iface),
+    newLit(member),
+    handler)
 
 proc matchField(conds: var seq[NimNode]; msgSym, field, value: NimNode) =
   if value.strVal.len > 0:
