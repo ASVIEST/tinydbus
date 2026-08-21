@@ -628,7 +628,7 @@ macro call*(conn: var BusConnection; msg: Message): Message =
     return newCall(
       when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
       else: bindSym"rawCall", conn, msg)
-  
+
   if interceptVersion.value == generatedVersion.value:
     newCall(
       when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
@@ -637,11 +637,15 @@ macro call*(conn: var BusConnection; msg: Message): Message =
     generatedVersion.inc(
       interceptVersion.value -
       generatedVersion.value)
-    let implName = genSym(nskProc, "resolveCallImpl")
+
+    let
+      implName = genSym(nskProc, "resolveCallImpl")
+      connParam = ident"conn"
+      msgParam = ident"msg"
+
     when not defined(tinydbus.runtimeDispatch):
       resolveCallSyms.add implName
-    let connParam = ident"conn"
-    let msgParam = ident"msg"
+
     var ifStmt = newNimNode(nnkIfStmt)
 
     for entry in interceptRegistry:
@@ -667,9 +671,10 @@ macro call*(conn: var BusConnection; msg: Message): Message =
 
     let procDef = newProc(
       name = implName,
-      params = [bindSym"Message",
-                newIdentDefs(connParam, newTree(nnkVarTy, bindSym"BusConnection")),
-                newIdentDefs(msgParam, bindSym"Message")],
+      params = [
+        bindSym"Message",
+        newIdentDefs(connParam, newTree(nnkVarTy, bindSym"BusConnection")),
+        newIdentDefs(msgParam, bindSym"Message")],
       body = ifStmt)
 
     when defined(tinydbus.runtimeDispatch):
