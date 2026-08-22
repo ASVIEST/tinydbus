@@ -17,7 +17,6 @@ nimble install https://github.com/ASVIEST/tinydbus
 import pkg/tinydbus
 
 var (conn, _) = openSessionBus()
-defer: conn.close()
 
 let msg = initMethodCallMsg(
   "org.freedesktop.Notifications",
@@ -41,7 +40,7 @@ body.add -1'i32           # expire_timeout
 
 msg.setBody(body)
 
-let reply = conn.call(msg)
+let reply = conn.syncall(msg)
 var br = initBodyReader(reply.body, reply.signature)
 echo "Notification id: ", br.read[:uint32]()
 ```

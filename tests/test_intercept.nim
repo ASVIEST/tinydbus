@@ -9,11 +9,12 @@ suite "intercept API":
       body.add 42'u32
       result.setBody(body)
 
-    addIntercept("org.test.Service",
-                "/org/test/Object",
-                "org.test.Interface",
-                "Read",
-                fakeRead)
+    addIntercept(
+      "org.test.Service",
+      "/org/test/Object",
+      "org.test.Interface",
+      "Read",
+      fakeRead)
 
     let msg = initMethodCallMsg(
       "org.test.Service",
@@ -25,7 +26,7 @@ suite "intercept API":
 
     # call fakeRead without needing a real connection
     var conn = BusConnection()
-    let reply = conn.call(msg)
+    let reply = conn.syncall(msg)
 
     assert reply.kind == mtMethodReturn
     var br = initBodyReader(reply.body, reply.signature)

@@ -10,11 +10,12 @@ suite "intercept cross-scope":
       result.setBody(body)
 
     block scope1:
-      addIntercept("org.test.CrossScope",
-                  "/org/test/Obj",
-                  "org.test.Iface",
-                  "Method",
-                  fakeHandler)
+      addIntercept(
+        "org.test.CrossScope",
+        "/org/test/Obj",
+        "org.test.Iface",
+        "Method",
+        fakeHandler)
 
       let msg = initMethodCallMsg(
         "org.test.CrossScope",
@@ -25,7 +26,7 @@ suite "intercept cross-scope":
       msg.sender = ":1.0"
 
       var conn: BusConnection
-      let reply = conn.call(msg)
+      let reply = conn.syncall(msg)
 
       check reply.kind == mtMethodReturn
       var br = initBodyReader(reply.body, reply.signature)
@@ -46,7 +47,7 @@ suite "intercept cross-scope":
       msg.sender = ":1.0"
 
       var conn = BusConnection()
-      let reply = conn.call(msg)
+      let reply = conn.syncall(msg)
 
       check reply.kind == mtMethodReturn
       var br = initBodyReader(reply.body, reply.signature)

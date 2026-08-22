@@ -1,6 +1,6 @@
 ## nim dbus protocol implementation.
 
-import std/[os, strutils, nativesockets, macrocache, macros, sequtils]
+import std/[os, strutils, nativesockets, macrocache, macros, sequtils, options, genasts, tables]
 
 const useValidationLayer* =
   not defined(tinydbus.disableValidation) and
@@ -50,8 +50,18 @@ type
   BusConnection* = object
     fd: SocketHandle = SocketHandle(-1) # osInvalidSocket
     nextSerial: uint32
+    pending: Table[uint32, Message]
 
   DbusError* = object of CatchableError
+
+  PendingCall* = object
+    # very similar to https://dbus.freedesktop.org/doc/api/html/group__DBusPendingCallInternals.html
+    # represents message you waiting for
+    # Theoretically we can use only BusConnection.pending, but it means that
+    # we need to add new items into BusConnection.pending for
+    # compile-time intercepts. Maybe it will be changed in future
+    callSerial: uint32
+    msg: Option[Message]
 
 when useValidationLayer:
   include validation_layer
@@ -274,12 +284,14 @@ proc sigTypeLen*(sig: string; pos: int = 0): int =
   case sig[pos]
   of 'a': 1 + sigTypeLen(sig, pos + 1)
   of '(', '{':
-    let close = if sig[pos] == '(': ')' else: '}'
+    let close =
+      if sig[pos] == '(': ')'
+      else: '}'
     var depth = 1
     var i = pos + 1
     while depth > 0:
       if sig[i] == sig[pos]: inc depth
-      elif sig[i] == close: dec depth
+      elif sig[i] == close:  dec depth
       inc i
     i - pos
   else: 1
@@ -321,8 +333,10 @@ proc initMethodCallMsg*(destination, path, iface, member: string): Message =
     validateLocalInterface(iface)
     validateLocalPath(path)
     validateMemberName(member)
-  Message(kind: mtMethodCall, destination: destination,
-          path: path, iface: iface, member: member)
+
+  Message(
+    kind: mtMethodCall, destination: destination,
+    path: path, iface: iface, member: member)
 
 proc initSignalMsg*(path, iface, member: string): Message =
   when useValidationLayer:
@@ -331,17 +345,21 @@ proc initSignalMsg*(path, iface, member: string): Message =
     validateLocalInterface(iface)
     validateLocalPath(path)
     validateMemberName(member)
+
   Message(kind: mtSignal, path: path, iface: iface, member: member)
 
 proc initMethodReturnMsg*(replyTo: Message): Message =
-  Message(kind: mtMethodReturn, replySerial: replyTo.serial,
-          destination: replyTo.sender)
+  Message(
+    kind: mtMethodReturn, replySerial: replyTo.serial,
+    destination: replyTo.sender)
 
 proc initErrorMsg*(replyTo: Message; name: string): Message =
   when useValidationLayer:
     validateErrorName(name)
-  Message(kind: mtError, replySerial: replyTo.serial,
-          destination: replyTo.sender, errorName: name)
+
+  Message(
+    kind: mtError, replySerial: replyTo.serial,
+    destination: replyTo.sender, errorName: name)
 
 proc setBody*(msg: Message; builder: BodyBuilder) =
   let (sig, data) = builder.finish()
@@ -393,7 +411,8 @@ proc deserialize(data: seq[byte]): Message =
   case char(endianness)
   of 'l': r.bigEndian = false
   of 'B': r.bigEndian = true
-  else: raise newException(DbusError, "invalid endian marker: " & $char(endianness))
+  else:
+    raise newException(DbusError, "invalid endian marker: " & $char(endianness))
 
   let msgType = r.get(uint8)
   let flags = r.get(uint8)
@@ -512,11 +531,13 @@ proc close*(conn: var BusConnection) =
 
 proc `=destroy`(conn: var BusConnection) =
   conn.close()
+  `=destroy`(conn.pending)
 
 proc `=wasMoved`(conn: var BusConnection) =
   # XXX: we can't use osInvalidSocket bacause it have side effects, so:
   conn.fd = SocketHandle(-1)
   conn.nextSerial = 0
+  `wasMoved`(conn.pending)
 
 proc `=copy`(
   dest: var BusConnection;
@@ -528,12 +549,13 @@ proc `=sink`(dest: var BusConnection; src: BusConnection) =
     dest.fd.close()
   dest.fd = src.fd
   dest.nextSerial = src.nextSerial
+  `=sink`(dest.pending, src.pending)
 
 proc connectBus*(address: string): BusConnection =
   let (path, isAbstract) = parseAddress(address)
   let fd = connectUnixSocket(path, isAbstract)
   authenticate(fd)
-  BusConnection(fd: fd, nextSerial: 1)
+  BusConnection(fd: fd, nextSerial: 1, pending: initTable[uint32, Message]())
 
 proc connectSession*(): BusConnection =
   let address = getEnv("DBUS_SESSION_BUS_ADDRESS")
@@ -544,7 +566,7 @@ proc connectSession*(): BusConnection =
 proc connectSystem*(): BusConnection =
   connectBus("unix:path=/var/run/dbus/system_bus_socket")
 
-proc send*(conn: var BusConnection; msg: Message): uint32 =
+proc send(conn: var BusConnection; msg: Message): uint32 =
   when useValidationLayer:
     case msg.kind
     of mtMethodCall, mtSignal: validateCommonFields(msg)
@@ -560,23 +582,29 @@ proc send*(conn: var BusConnection; msg: Message): uint32 =
   serial
 
 proc readU32(data: openArray[byte]; off: int; bigEndian: bool): uint32 {.inline.} =
+  result = 0
   for i in 0 ..< 4:
-    let shift = if bigEndian: (3 - i) * 8 else: i * 8
+    let shift =
+      if bigEndian: (3 - i) * 8
+      else: i * 8
+
     result = result or (uint32(data[off + i]) shl shift)
 
 proc receive*(conn: BusConnection): Message =
   var hdr: array[16, byte]
   recvAll(conn.fd, addr hdr[0], 16)
-  let be = case char(hdr[0])
+  let be =
+    case char(hdr[0])
     of 'l': false
     of 'B': true
     else: raise newException(DbusError, "invalid endian marker")
 
-  let bodyLen = readU32(hdr, 4, be)
-  let fieldsLen = readU32(hdr, 12, be)
+  let
+    bodyLen = readU32(hdr, 4, be)
+    fieldsLen = readU32(hdr, 12, be)
+    fieldsPadded = int(fieldsLen) + ((8 - (int(fieldsLen) mod 8)) mod 8)
+    totalSize = 16 + fieldsPadded + int(bodyLen)
 
-  let fieldsPadded = int(fieldsLen) + ((8 - (int(fieldsLen) mod 8)) mod 8)
-  let totalSize = 16 + fieldsPadded + int(bodyLen)
   when useValidationLayer:
     validateMessageLength(totalSize)
   var fullMsg = newSeq[byte](totalSize)
@@ -585,19 +613,25 @@ proc receive*(conn: BusConnection): Message =
     recvAll(conn.fd, addr fullMsg[16], totalSize - 16)
   deserialize(fullMsg)
 
-proc rawCall*(conn: var BusConnection; msg: Message): Message =
-  let serial = conn.send(msg)
+proc wait(conn: BusConnection, call: var PendingCall) =
   while true:
-    let reply = conn.receive()
-    if reply.replySerial == serial:
+    let reply =
+      if call.callSerial in conn.pending:
+        conn.pending[call.callSerial]
+      else:
+        conn.receive()
+
+    if reply.replySerial != 0:
       if reply.kind == mtError:
         var errDetail = reply.errorName
-        if reply.body.len > 0 and reply.signature.len > 0 and
-           reply.signature[0] == 's':
+        if reply.body.len > 0 and reply.signature.len > 0 and reply.signature[0] == 's':
           var br = initBodyReader(reply.body, reply.signature)
           errDetail.add ": " & br.read[:string]()
         raise newException(DbusError, errDetail)
-      return reply
+
+      if reply.replySerial == call.callSerial:
+        call.msg = some(reply)
+        break
 
 # Compile-time intercept support:
 
@@ -608,27 +642,34 @@ const
 
 when defined(tinydbus.runtimeDispatch):
   # nimcall cheaper than {.closure.} btw
-  var callImpl: proc(
-    conn: var BusConnection; msg: Message): Message {.nimcall.} = rawCall
+  var callImpl =
+    proc (conn: var BusConnection; msg: Message): PendingCall {.nimcall.} =
+      PendingCall(callSerial: conn.send(msg))
 else:
   const resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
 
-macro addIntercept*(dest, path, iface, member: static string;
-                    handler: typed) =
+macro addIntercept*(dest, path, iface, member: static string; handler: typed) =
   interceptVersion.inc()
-  interceptRegistry.add newTree(nnkTupleConstr,
-    newLit(dest), newLit(path), newLit(iface), newLit(member), handler)
+  interceptRegistry.add newTree(
+    nnkTupleConstr,
+    newLit(dest),
+    newLit(path),
+    newLit(iface),
+    newLit(member),
+    handler)
 
 proc matchField(conds: var seq[NimNode]; msgSym, field, value: NimNode) =
   if value.strVal.len > 0:
     conds.add infix(newDotExpr(msgSym, field), "==", value)
 
-macro call*(conn: var BusConnection; msg: Message): Message =
+macro call*(conn: var BusConnection; msg: Message): PendingCall =
   if interceptRegistry.len == 0:
-    return newCall(
-      when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
-      else: bindSym"rawCall", conn, msg)
-  
+    return
+      when defined(tinydbus.runtimeDispatch): newCall(bindSym"callImpl", conn, msg)
+      else:
+        genAst(conn, msg):
+          PendingCall(callSerial: conn.send(msg))
+
   if interceptVersion.value == generatedVersion.value:
     newCall(
       when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
@@ -637,11 +678,15 @@ macro call*(conn: var BusConnection; msg: Message): Message =
     generatedVersion.inc(
       interceptVersion.value -
       generatedVersion.value)
-    let implName = genSym(nskProc, "resolveCallImpl")
+
+    let
+      implName = genSym(nskProc, "resolveCallImpl")
+      connParam = ident"conn"
+      msgParam = ident"msg"
+
     when not defined(tinydbus.runtimeDispatch):
       resolveCallSyms.add implName
-    let connParam = ident"conn"
-    let msgParam = ident"msg"
+
     var ifStmt = newNimNode(nnkIfStmt)
 
     for entry in interceptRegistry:
@@ -658,18 +703,22 @@ macro call*(conn: var BusConnection; msg: Message): Message =
         if conds.len == 0: newLit(true)
         else: conds.foldl(infix(a, "and", b))
 
-      let action = newCall(handler, msgParam)
+      let action = genAst(handler, msg = msgParam):
+        PendingCall(msg: some handler(msg))
       ifStmt.add newTree(nnkElifBranch, cond, action)
 
     ifStmt.add newTree(
       nnkElse,
-      newCall(bindSym"rawCall", connParam, msgParam))
+      genAst(conn = connParam, msg = msgParam) do:
+        PendingCall(callSerial: conn.send(msg))
+    )
 
     let procDef = newProc(
       name = implName,
-      params = [bindSym"Message",
-                newIdentDefs(connParam, newTree(nnkVarTy, bindSym"BusConnection")),
-                newIdentDefs(msgParam, bindSym"Message")],
+      params = [
+        bindSym"PendingCall",
+        newIdentDefs(connParam, newTree(nnkVarTy, bindSym"BusConnection")),
+        newIdentDefs(msgParam, bindSym"Message")],
       body = ifStmt)
 
     when defined(tinydbus.runtimeDispatch):
@@ -687,10 +736,20 @@ else:
 
 # Basic helpers:
 
+template syncall*(conn: var BusConnection; msg: Message): Message =
+  ## Sync version of `call` proc
+  # need to be template to support compile-time intercepts
+  var pending = conn.call(msg)
+  if pending.msg.isNone:
+    conn.wait(pending)
+  pending.msg.unsafeGet()
+
 proc hello*(conn: var BusConnection): string =
-  let msg = initMethodCallMsg("org.freedesktop.DBus", "/org/freedesktop/DBus",
-                          "org.freedesktop.DBus", "Hello")
-  var br = initBodyReader(conn.call(msg).body, "s")
+  let msg = initMethodCallMsg(
+    "org.freedesktop.DBus", "/org/freedesktop/DBus",
+    "org.freedesktop.DBus", "Hello")
+
+  var br = initBodyReader(conn.syncall(msg).body, "s")
   br.read[:string]()
 
 proc openSessionBus*(): (BusConnection, string) =
