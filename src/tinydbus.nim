@@ -1,6 +1,6 @@
 ## nim dbus protocol implementation.
 
-import std/[os, strutils, nativesockets, macrocache, macros, sequtils, options, genasts]
+import std/[os, strutils, nativesockets, macrocache, macros, sequtils, options, genasts, tables]
 
 const useValidationLayer* =
   not defined(tinydbus.disableValidation) and
@@ -50,6 +50,7 @@ type
   BusConnection* = object
     fd: SocketHandle = SocketHandle(-1) # osInvalidSocket
     nextSerial: uint32
+    pending: Table[uint32, Message]
 
   DbusError* = object of CatchableError
 
@@ -518,11 +519,13 @@ proc close*(conn: var BusConnection) =
 
 proc `=destroy`(conn: var BusConnection) =
   conn.close()
+  `=destroy`(conn.pending)
 
 proc `=wasMoved`(conn: var BusConnection) =
   # XXX: we can't use osInvalidSocket bacause it have side effects, so:
   conn.fd = SocketHandle(-1)
   conn.nextSerial = 0
+  `wasMoved`(conn.pending)
 
 proc `=copy`(
   dest: var BusConnection;
@@ -534,12 +537,13 @@ proc `=sink`(dest: var BusConnection; src: BusConnection) =
     dest.fd.close()
   dest.fd = src.fd
   dest.nextSerial = src.nextSerial
+  `=sink`(dest.pending, src.pending)
 
 proc connectBus*(address: string): BusConnection =
   let (path, isAbstract) = parseAddress(address)
   let fd = connectUnixSocket(path, isAbstract)
   authenticate(fd)
-  BusConnection(fd: fd, nextSerial: 1)
+  BusConnection(fd: fd, nextSerial: 1, pending: initTable[uint32, Message]())
 
 proc connectSession*(): BusConnection =
   let address = getEnv("DBUS_SESSION_BUS_ADDRESS")
@@ -599,9 +603,13 @@ proc receive*(conn: BusConnection): Message =
 
 proc wait(conn: BusConnection, call: var PendingCall) =
   while true:
-    let reply = conn.receive()
+    let reply =
+      if call.callSerial in conn.pending:
+        conn.pending[call.callSerial]
+      else:
+        conn.receive()
 
-    if reply.replySerial == call.callSerial:
+    if reply.replySerial != 0:
       if reply.kind == mtError:
         var errDetail = reply.errorName
         if reply.body.len > 0 and reply.signature.len > 0 and reply.signature[0] == 's':
@@ -609,9 +617,9 @@ proc wait(conn: BusConnection, call: var PendingCall) =
           errDetail.add ": " & br.read[:string]()
         raise newException(DbusError, errDetail)
 
-      call.msg = some(reply)
-      break
-
+      if reply.replySerial == call.callSerial:
+        call.msg = some(reply)
+        break
 
 # Compile-time intercept support:
 
