@@ -1,6 +1,6 @@
 ## nim dbus protocol implementation.
 
-import std/[os, strutils, nativesockets, macrocache, macros, sequtils]
+import std/[os, strutils, nativesockets, macrocache, macros, sequtils, options, genasts]
 
 const useValidationLayer* =
   not defined(tinydbus.disableValidation) and
@@ -52,6 +52,12 @@ type
     nextSerial: uint32
 
   DbusError* = object of CatchableError
+
+  PendingCall* = object
+    # very similar to https://dbus.freedesktop.org/doc/api/html/group__DBusPendingCallInternals.html
+    # represents message you waiting for
+    callSerial: uint32
+    msg: Option[Message]
 
 when useValidationLayer:
   include validation_layer
@@ -544,7 +550,7 @@ proc connectSession*(): BusConnection =
 proc connectSystem*(): BusConnection =
   connectBus("unix:path=/var/run/dbus/system_bus_socket")
 
-proc send*(conn: var BusConnection; msg: Message): uint32 =
+proc send(conn: var BusConnection; msg: Message): uint32 =
   when useValidationLayer:
     case msg.kind
     of mtMethodCall, mtSignal: validateCommonFields(msg)
@@ -591,19 +597,21 @@ proc receive*(conn: BusConnection): Message =
     recvAll(conn.fd, addr fullMsg[16], totalSize - 16)
   deserialize(fullMsg)
 
-proc rawCall*(conn: var BusConnection; msg: Message): Message =
-  let serial = conn.send(msg)
+proc wait(conn: BusConnection, call: var PendingCall) =
   while true:
     let reply = conn.receive()
-    if reply.replySerial == serial:
+
+    if reply.replySerial == call.callSerial:
       if reply.kind == mtError:
         var errDetail = reply.errorName
-        if reply.body.len > 0 and reply.signature.len > 0 and
-           reply.signature[0] == 's':
+        if reply.body.len > 0 and reply.signature.len > 0 and reply.signature[0] == 's':
           var br = initBodyReader(reply.body, reply.signature)
           errDetail.add ": " & br.read[:string]()
         raise newException(DbusError, errDetail)
-      return reply
+
+      call.msg = some(reply)
+      break
+
 
 # Compile-time intercept support:
 
@@ -614,8 +622,9 @@ const
 
 when defined(tinydbus.runtimeDispatch):
   # nimcall cheaper than {.closure.} btw
-  var callImpl: proc(
-    conn: var BusConnection; msg: Message): Message {.nimcall.} = rawCall
+  var callImpl:
+    proc (conn: var BusConnection; msg: Message): PendingCall {.nimcall.} =
+      PendingCall(serial: conn.send(msg))
 else:
   const resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
 
@@ -633,11 +642,13 @@ proc matchField(conds: var seq[NimNode]; msgSym, field, value: NimNode) =
   if value.strVal.len > 0:
     conds.add infix(newDotExpr(msgSym, field), "==", value)
 
-macro call*(conn: var BusConnection; msg: Message): Message =
+macro call*(conn: var BusConnection; msg: Message): PendingCall =
   if interceptRegistry.len == 0:
-    return newCall(
+    return
       when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
-      else: bindSym"rawCall", conn, msg)
+      else:
+        genAst(conn, msg):
+          PendingCall(callSerial: conn.send(msg))
 
   if interceptVersion.value == generatedVersion.value:
     newCall(
@@ -677,7 +688,9 @@ macro call*(conn: var BusConnection; msg: Message): Message =
 
     ifStmt.add newTree(
       nnkElse,
-      newCall(bindSym"rawCall", connParam, msgParam))
+      genAst(conn = connParam, msg = msgParam) do:
+        PendingCall(callSerial: conn.send(msg))
+    )
 
     let procDef = newProc(
       name = implName,
@@ -702,10 +715,18 @@ else:
 
 # Basic helpers:
 
+proc syncall*(conn: var BusConnection; msg: Message): Message =
+  ## Sync version of `call` proc
+  var pending = conn.call(msg)
+  conn.wait(pending)
+  pending.msg.unsafeGet()
+
 proc hello*(conn: var BusConnection): string =
-  let msg = initMethodCallMsg("org.freedesktop.DBus", "/org/freedesktop/DBus",
-                          "org.freedesktop.DBus", "Hello")
-  var br = initBodyReader(conn.call(msg).body, "s")
+  let msg = initMethodCallMsg(
+    "org.freedesktop.DBus", "/org/freedesktop/DBus",
+    "org.freedesktop.DBus", "Hello")
+
+  var br = initBodyReader(conn.syncall(msg).body, "s")
   br.read[:string]()
 
 proc openSessionBus*(): (BusConnection, string) =

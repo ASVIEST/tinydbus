@@ -29,7 +29,7 @@ proc main() =
 
   msg.setBody(body)
 
-  let reply = conn.call(msg)
+  let reply = conn.syncall(msg)
   var br = initBodyReader(reply.body, reply.signature)
   echo "Notification id: ", br.read[:uint32]()
 

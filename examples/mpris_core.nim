@@ -18,7 +18,7 @@ proc listPlayers*(conn: var BusConnection): seq[string] =
   let msg = initMethodCallMsg(
     "org.freedesktop.DBus", "/org/freedesktop/DBus",
     "org.freedesktop.DBus", "ListNames")
-  let reply = conn.call(msg)
+  let reply = conn.syncall(msg)
   var br = initBodyReader(reply.body, reply.signature)
   let endPos = br.readArrayBegin("s")
   while br.readArrayHasMore(endPos):
@@ -36,7 +36,7 @@ proc getProperty*[T](conn: var BusConnection, busName, iface, name: string): T =
   body.add iface
   body.add name
   msg.setBody(body)
-  let reply = conn.call(msg)
+  let reply = conn.syncall(msg)
   var br = initBodyReader(reply.body, reply.signature)
   discard br.readVariantSignature()
   read[T](br)
@@ -56,7 +56,7 @@ proc getPropertyReply*(p: var Player, iface, name: string): Message =
   body.add iface
   body.add name
   msg.setBody(body)
-  p.conn.call(msg)
+  p.conn.syncall(msg)
 
 proc setProperty*[T](p: var Player, iface, name: string, value: T) =
   let msg = initMethodCallMsg(p.busName, $MprisPath, PropsIface, "Set")
@@ -66,7 +66,7 @@ proc setProperty*[T](p: var Player, iface, name: string, value: T) =
   body.addVariant($sigChar(T)) do(b: var BodyBuilder):
     b.add value
   msg.setBody(body)
-  discard p.conn.call(msg)
+  discard p.conn.syncall(msg)
 
 template playerCall(p: var Player, member: string, buildBody: untyped) =
   let msg = initMethodCallMsg(p.busName, $MprisPath, PlayerIface, member)
@@ -74,11 +74,11 @@ template playerCall(p: var Player, member: string, buildBody: untyped) =
     var body {.inject.} = initBodyBuilder()
     buildBody
     msg.setBody(body)
-  discard p.conn.call(msg)
+  discard p.conn.syncall(msg)
 
 template playerCall(p: var Player, member: string) =
   let msg = initMethodCallMsg(p.busName, $MprisPath, PlayerIface, member)
-  discard p.conn.call(msg)
+  discard p.conn.syncall(msg)
 
 proc play*(p: var Player) = p.playerCall("Play")
 proc pause*(p: var Player) = p.playerCall("Pause")
