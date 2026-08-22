@@ -57,6 +57,9 @@ type
   PendingCall* = object
     # very similar to https://dbus.freedesktop.org/doc/api/html/group__DBusPendingCallInternals.html
     # represents message you waiting for
+    # Theoretically we can use only BusConnection.pending, but it means that
+    # we need to add new items into BusConnection.pending for
+    # compile-time intercepts. Maybe it will be changed in future
     callSerial: uint32
     msg: Option[Message]
 
@@ -281,12 +284,14 @@ proc sigTypeLen*(sig: string; pos: int = 0): int =
   case sig[pos]
   of 'a': 1 + sigTypeLen(sig, pos + 1)
   of '(', '{':
-    let close = if sig[pos] == '(': ')' else: '}'
+    let close =
+      if sig[pos] == '(': ')'
+      else: '}'
     var depth = 1
     var i = pos + 1
     while depth > 0:
       if sig[i] == sig[pos]: inc depth
-      elif sig[i] == close: dec depth
+      elif sig[i] == close:  dec depth
       inc i
     i - pos
   else: 1
@@ -328,8 +333,10 @@ proc initMethodCallMsg*(destination, path, iface, member: string): Message =
     validateLocalInterface(iface)
     validateLocalPath(path)
     validateMemberName(member)
-  Message(kind: mtMethodCall, destination: destination,
-          path: path, iface: iface, member: member)
+
+  Message(
+    kind: mtMethodCall, destination: destination,
+    path: path, iface: iface, member: member)
 
 proc initSignalMsg*(path, iface, member: string): Message =
   when useValidationLayer:
@@ -338,17 +345,21 @@ proc initSignalMsg*(path, iface, member: string): Message =
     validateLocalInterface(iface)
     validateLocalPath(path)
     validateMemberName(member)
+
   Message(kind: mtSignal, path: path, iface: iface, member: member)
 
 proc initMethodReturnMsg*(replyTo: Message): Message =
-  Message(kind: mtMethodReturn, replySerial: replyTo.serial,
-          destination: replyTo.sender)
+  Message(
+    kind: mtMethodReturn, replySerial: replyTo.serial,
+    destination: replyTo.sender)
 
 proc initErrorMsg*(replyTo: Message; name: string): Message =
   when useValidationLayer:
     validateErrorName(name)
-  Message(kind: mtError, replySerial: replyTo.serial,
-          destination: replyTo.sender, errorName: name)
+
+  Message(
+    kind: mtError, replySerial: replyTo.serial,
+    destination: replyTo.sender, errorName: name)
 
 proc setBody*(msg: Message; builder: BodyBuilder) =
   let (sig, data) = builder.finish()
@@ -400,7 +411,8 @@ proc deserialize(data: seq[byte]): Message =
   case char(endianness)
   of 'l': r.bigEndian = false
   of 'B': r.bigEndian = true
-  else: raise newException(DbusError, "invalid endian marker: " & $char(endianness))
+  else:
+    raise newException(DbusError, "invalid endian marker: " & $char(endianness))
 
   let msgType = r.get(uint8)
   let flags = r.get(uint8)
@@ -630,13 +642,13 @@ const
 
 when defined(tinydbus.runtimeDispatch):
   # nimcall cheaper than {.closure.} btw
-  var callImpl:
+  var callImpl =
     proc (conn: var BusConnection; msg: Message): PendingCall {.nimcall.} =
-      PendingCall(serial: conn.send(msg))
+      PendingCall(callSerial: conn.send(msg))
 else:
   const resolveCallSyms = CacheSeq"tinydbus.resolveCallSyms"
 
-macro addIntercept*(dest, path, iface, member: static string;handler: typed) =
+macro addIntercept*(dest, path, iface, member: static string; handler: typed) =
   interceptVersion.inc()
   interceptRegistry.add newTree(
     nnkTupleConstr,
@@ -653,7 +665,7 @@ proc matchField(conds: var seq[NimNode]; msgSym, field, value: NimNode) =
 macro call*(conn: var BusConnection; msg: Message): PendingCall =
   if interceptRegistry.len == 0:
     return
-      when defined(tinydbus.runtimeDispatch): bindSym"callImpl"
+      when defined(tinydbus.runtimeDispatch): newCall(bindSym"callImpl", conn, msg)
       else:
         genAst(conn, msg):
           PendingCall(callSerial: conn.send(msg))
@@ -691,7 +703,8 @@ macro call*(conn: var BusConnection; msg: Message): PendingCall =
         if conds.len == 0: newLit(true)
         else: conds.foldl(infix(a, "and", b))
 
-      let action = newCall(handler, msgParam)
+      let action = genAst(handler, msg = msgParam):
+        PendingCall(msg: some handler(msg))
       ifStmt.add newTree(nnkElifBranch, cond, action)
 
     ifStmt.add newTree(
@@ -703,7 +716,7 @@ macro call*(conn: var BusConnection; msg: Message): PendingCall =
     let procDef = newProc(
       name = implName,
       params = [
-        bindSym"Message",
+        bindSym"PendingCall",
         newIdentDefs(connParam, newTree(nnkVarTy, bindSym"BusConnection")),
         newIdentDefs(msgParam, bindSym"Message")],
       body = ifStmt)
@@ -723,10 +736,12 @@ else:
 
 # Basic helpers:
 
-proc syncall*(conn: var BusConnection; msg: Message): Message =
+template syncall*(conn: var BusConnection; msg: Message): Message =
   ## Sync version of `call` proc
+  # need to be template to support compile-time intercepts
   var pending = conn.call(msg)
-  conn.wait(pending)
+  if pending.msg.isNone:
+    conn.wait(pending)
   pending.msg.unsafeGet()
 
 proc hello*(conn: var BusConnection): string =
