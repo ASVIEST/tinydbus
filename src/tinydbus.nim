@@ -9,8 +9,6 @@ const useValidationLayer* =
 when defined(posix):
   import std/posix
 
-  const MsgNosignal {.importc: "MSG_NOSIGNAL", header: "<sys/socket.h>".}: cint = 0x4000
-
 type
   ObjectPath* = distinct string
   DbusSignature* = distinct string
