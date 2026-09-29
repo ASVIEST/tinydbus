@@ -483,27 +483,124 @@ proc recvLine(fd: SocketHandle): string =
     if c == '\n': break
 
 
+type
+  BusTransport* = enum
+    ## Bus transport (i.e transport in path: transport:key1=val1,key2=val2,...)
 
+    Unix
+    # Unix socket
+    # required keys:
+    # Client: Or[path, abstract]
+    # Server: Or[path, abstract, dir, tmpdir, runtime]
 
-proc parseAddress(address: string): (string, bool) =
-  if not address.startsWith("unix:"):
-    raise newException(DbusError, "unsupported bus address: " & address)
-  for part in address[5 .. ^1].split(','):
-    if part.startsWith("path="):     return (part[5 .. ^1], false)
-    if part.startsWith("abstract="): return (part[9 .. ^1], true)
-  raise newException(DbusError, "no path in bus address: " & address)
+    Tcp
+    # Tcp connection
+    # optional keys:
+    # Client, Server: familly (should be ipv4/ipv6)
+    # Server: host, port, bind
+    # required keys:
+    # Client: And[host, port], where port != 0
+    # Server:
+    # 0 port for server means free port
+    # by default bind = host 
 
-proc connectUnixSocket(path: string; isAbstract: bool): SocketHandle =
+    # Unixexec
+
+  UnixBusAddress* = object
+    isAbstract*: bool
+    path*: string # in this object this is path=`path` or abstract=`path`
+
+  BusAddress* = object
+    case transport: BusTransport
+    of Unix:
+      unix: UnixBusAddress
+    else:
+      discard # not implemented
+
+proc prefix(transport: BusTransport): string =
+  # this not part of enum for type safety ($ can be typed as $transport, when it is Option)
+  case transport
+  of Unix: "unix:"
+  of Tcp: "tcp:"
+
+proc parseHexChar(c: char, position: int): uint8 =
+  # copy of inner code from loop in parseutils.nim
+  # output shl 4 or should be on callside
+  case c
+  of '0'..'9':
+    result = uint8(ord(c) - ord('0'))
+  of 'a'..'f':
+    result = uint8(ord(c) - ord('a') + 10)
+  of 'A'..'F':
+    result = uint8(ord(c) - ord('A') + 10)
+  else:
+    raise newException(ValueError, "Invalid hex char at position: " & $position)
+
+proc parseAddress(address: string): BusAddress =
+  var transport = none(BusTransport)
+
+  for candidate in low(BusTransport)..high(BusTransport):
+    if address.startsWith(prefix candidate):
+      transport = some(candidate)
+
+  var n = len(prefix transport.get())
+  result = BusAddress(transport: transport.get())
+
+  var
+    key = ""
+    value = ""
+    parsingValue = false
+
+  var i = n
+
+  while i < address.len:
+    case address[i]
+    of ',':
+      echo key, "=", value
+      parsingValue = false
+      key = ""
+      value = ""
+    of '=':
+      parsingValue = true
+    of Whitespace:
+      raise newException(
+        ValueError,
+        "Found unescaped ' ' character at position: " & $i &
+        ", use %20"
+      )
+    of '%':
+      let h = char(
+        parseHexChar(address[i + 1], i + 1) shl 4 or
+        parseHexChar(address[i + 2], i + 2)
+      )
+
+      if parsingValue:
+        value.add h
+      else:
+        key.add h
+
+      i += 2
+    else:
+      if parsingValue:
+        value.add address[i]
+      else:
+        key.add address[i]
+
+    inc i
+
+# var z = parseAddress("unix:path=/tmp/my%20bus%2Ctest")
+
+proc connectUnixSocket(address: UnixBusAddress): SocketHandle =
   let fd = createNativeSocket(Domain.AF_UNIX, SockType.SOCK_STREAM,
                               Protocol.IPPROTO_IP)
   if fd == osInvalidSocket:
     raise newException(DbusError, "socket() failed")
   var sa: SockaddrUn
   sa.sun_family = cushort(posix.AF_UNIX)
-  let offset = int(isAbstract)
-  for i in 0 ..< min(path.len, sizeof(sa.sun_path) - 1 - offset):
-    sa.sun_path[i + offset] = path[i]
-  let addrLen = SockLen(2 + offset + path.len + ord(not isAbstract))
+  let offset = int(address.isAbstract)
+  for i in 0 ..< min(address.path.len, sizeof(sa.sun_path) - 1 - offset):
+    sa.sun_path[i + offset] = address.path[i]
+  let addrLen = SockLen(2 + offset + address.path.len + ord(not address.isAbstract))
   if posix.connect(fd, cast[ptr SockAddr](addr sa), addrLen) != 0:
     fd.close()
     raise newException(DbusError, "connect() failed: " & $strerror(errno))
@@ -552,8 +649,9 @@ proc `=sink`(dest: var BusConnection; src: BusConnection) =
   `=sink`(dest.pending, src.pending)
 
 proc connectBus*(address: string): BusConnection =
-  let (path, isAbstract) = parseAddress(address)
-  let fd = connectUnixSocket(path, isAbstract)
+  let parsedAddress = parseAddress(address)
+  assert parsedAddress.transport == Unix
+  let fd = connectUnixSocket(parsedAddress.unix)
   authenticate(fd)
   BusConnection(fd: fd, nextSerial: 1, pending: initTable[uint32, Message]())
 
