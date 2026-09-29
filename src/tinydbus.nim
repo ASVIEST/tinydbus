@@ -778,25 +778,33 @@ proc receive*(conn: BusConnection): Message =
     recvAll(conn.fd, addr fullMsg[16], totalSize - 16)
   deserialize(fullMsg)
 
-proc wait*(conn: BusConnection, call: var PendingCall) =
+proc wait*(conn: var BusConnection, call: var PendingCall) =
   while true:
     let reply =
-      if call.callSerial in conn.pending:
+      if call.msg.isSome:
+        call.msg.unsafeGet()
+      elif call.callSerial in conn.pending:
         conn.pending[call.callSerial]
       else:
         conn.receive()
 
-    if reply.replySerial != 0:
-      if reply.kind == Error:
-        var errDetail = reply.errorName
-        if reply.body.len > 0 and reply.signature.len > 0 and reply.signature[0] == 's':
-          var br = initBodyReader(reply.body, reply.signature)
-          errDetail.add ": " & br.read[:string]()
-        raise newException(DbusError, errDetail)
+    if call.msg.isNone and reply.replySerial == 0:
+      continue
 
-      if reply.replySerial == call.callSerial:
-        call.msg = some(reply)
-        break
+    if reply.replySerial != call.callSerial and call.msg.isNone:
+      conn.pending[reply.replySerial] = reply
+      continue
+
+    conn.pending.del(call.callSerial)
+    call.msg = some(reply)
+    if reply.kind == Error:
+      var errDetail = reply.errorName
+      if reply.body.len > 0 and reply.signature.len > 0 and reply.signature[0] == 's':
+        var br = initBodyReader(reply.body, reply.signature)
+        errDetail.add ": " & br.read[:string]()
+      raise newException(DbusError, errDetail)
+
+    break
 
 # Compile-time intercept support:
 
