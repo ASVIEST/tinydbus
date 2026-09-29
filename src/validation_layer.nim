@@ -285,13 +285,13 @@ proc validateLocalInterface*(iface: string) =
 proc validateRequiredHeaders*(msg: Message) =
   ## https://dbus.freedesktop.org/doc/dbus-specification.html#message-protocol-header-fields
   case msg.kind
-  of mtMethodCall:
+  of MethodCall:
     # spec-table: "PATH" "MEMBER" "METHOD_CALL" "SIGNAL"
     if msg.path.len == 0:
       validationError "METHOD_CALL requires PATH header field"
     if msg.member.len == 0:
       validationError "METHOD_CALL requires MEMBER header field"
-  of mtSignal:
+  of Signal:
     # spec-table: "PATH" "INTERFACE" "MEMBER" required in "SIGNAL"
     if msg.path.len == 0:
       validationError "SIGNAL requires PATH header field"
@@ -299,17 +299,17 @@ proc validateRequiredHeaders*(msg: Message) =
       validationError "SIGNAL requires INTERFACE header field"
     if msg.member.len == 0:
       validationError "SIGNAL requires MEMBER header field"
-  of mtError:
+  of Error:
     # spec-table: "ERROR_NAME" "REPLY_SERIAL" "ERROR" "METHOD_RETURN"
     if msg.errorName.len == 0:
       validationError "ERROR requires ERROR_NAME header field"
     if msg.replySerial == 0:
       validationError "ERROR requires REPLY_SERIAL header field"
-  of mtMethodReturn:
+  of MethodReturn:
     # spec-table: "REPLY_SERIAL" "ERROR" "METHOD_RETURN"
     if msg.replySerial == 0:
       validationError "METHOD_RETURN requires REPLY_SERIAL header field"
-  of mtInvalid:
+  of Invalid:
     validationError "message has invalid type"
 
 proc validateCommonFields(msg: Message) =

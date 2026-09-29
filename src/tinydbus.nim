@@ -16,23 +16,23 @@ type
   DbusSignature* = distinct string
 
   MessageType* = enum
-    mtInvalid = 0
-    mtMethodCall = 1
-    mtMethodReturn = 2
-    mtError = 3
-    mtSignal = 4
+    Invalid = 0
+    MethodCall = 1
+    MethodReturn = 2
+    Error = 3
+    Signal = 4
 
   HeaderField = enum
-    hfInvalid = 0
-    hfPath = 1
-    hfInterface = 2
-    hfMember = 3
-    hfErrorName = 4
-    hfReplySerial = 5
-    hfDestination = 6
-    hfSender = 7
-    hfSignature = 8
-    hfUnixFds = 9
+    Invalid = 0
+    Path = 1
+    Interface = 2
+    Member = 3
+    ErrorName = 4
+    ReplySerial = 5
+    Destination = 6
+    Sender = 7
+    Signature = 8
+    UnixFds = 9
 
   Message* = ref object
     kind*: MessageType
@@ -330,7 +330,7 @@ proc initMethodCallMsg*(destination, path, iface, member: string): Message =
     validateMemberName(member)
 
   Message(
-    kind: mtMethodCall, destination: destination,
+    kind: MethodCall, destination: destination,
     path: path, iface: iface, member: member)
 
 proc initSignalMsg*(path, iface, member: string): Message =
@@ -341,11 +341,11 @@ proc initSignalMsg*(path, iface, member: string): Message =
     validateLocalPath(path)
     validateMemberName(member)
 
-  Message(kind: mtSignal, path: path, iface: iface, member: member)
+  Message(kind: Signal, path: path, iface: iface, member: member)
 
 proc initMethodReturnMsg*(replyTo: Message): Message =
   Message(
-    kind: mtMethodReturn, replySerial: replyTo.serial,
+    kind: MethodReturn, replySerial: replyTo.serial,
     destination: replyTo.sender)
 
 proc initErrorMsg*(replyTo: Message; name: string): Message =
@@ -353,7 +353,7 @@ proc initErrorMsg*(replyTo: Message; name: string): Message =
     validateErrorName(name)
 
   Message(
-    kind: mtError, replySerial: replyTo.serial,
+    kind: Error, replySerial: replyTo.serial,
     destination: replyTo.sender, errorName: name)
 
 proc setBody*(msg: Message; builder: BodyBuilder) =
@@ -383,14 +383,14 @@ proc serialize(msg: Message; serial: uint32): seq[byte] =
     h.put(DbusSignature(sig))
     h.put(val)
 
-  if msg.path.len > 0:        field(hfPath, "o", msg.path)
-  if msg.iface.len > 0:       field(hfInterface, "s", msg.iface)
-  if msg.member.len > 0:      field(hfMember, "s", msg.member)
-  if msg.errorName.len > 0:   field(hfErrorName, "s", msg.errorName)
-  if msg.replySerial != 0:    field(hfReplySerial, "u", msg.replySerial)
-  if msg.destination.len > 0: field(hfDestination, "s", msg.destination)
-  if msg.sender.len > 0:      field(hfSender, "s", msg.sender)
-  if msg.signature.len > 0:   field(hfSignature, "g", DbusSignature(msg.signature))
+  if msg.path.len > 0:        field(Path, "o", msg.path)
+  if msg.iface.len > 0:       field(Interface, "s", msg.iface)
+  if msg.member.len > 0:      field(Member, "s", msg.member)
+  if msg.errorName.len > 0:   field(ErrorName, "s", msg.errorName)
+  if msg.replySerial != 0:    field(ReplySerial, "u", msg.replySerial)
+  if msg.destination.len > 0: field(Destination, "s", msg.destination)
+  if msg.sender.len > 0:      field(Sender, "s", msg.sender)
+  if msg.signature.len > 0:   field(Signature, "g", DbusSignature(msg.signature))
 
   h.putAt(12, uint32(h.len - fieldsStart))
   h.alignTo(8)
@@ -427,16 +427,16 @@ proc deserialize(data: seq[byte]): Message =
     let fc = HeaderField(r.get(uint8))
     discard r.get(DbusSignature) # field type signature
     case fc
-    of hfPath:        result.path = r.get(string)
-    of hfInterface:   result.iface = r.get(string)
-    of hfMember:      result.member = r.get(string)
-    of hfErrorName:   result.errorName = r.get(string)
-    of hfReplySerial: result.replySerial = r.get(uint32)
-    of hfDestination: result.destination = r.get(string)
-    of hfSender:      result.sender = r.get(string)
-    of hfSignature:   result.signature = string(r.get(DbusSignature))
-    of hfUnixFds:     discard r.get(uint32)
-    of hfInvalid:     raise newException(DbusError, "invalid header field")
+    of Path:        result.path = r.get(string)
+    of Interface:   result.iface = r.get(string)
+    of Member:      result.member = r.get(string)
+    of ErrorName:   result.errorName = r.get(string)
+    of ReplySerial: result.replySerial = r.get(uint32)
+    of Destination: result.destination = r.get(string)
+    of Sender:      result.sender = r.get(string)
+    of Signature:   result.signature = string(r.get(DbusSignature))
+    of UnixFds:     discard r.get(uint32)
+    of Invalid:     raise newException(DbusError, "invalid header field")
 
   r.pos = fieldsEnd
   r.alignTo(8)
@@ -726,9 +726,9 @@ proc connectSystem*(): BusConnection =
 proc send(conn: var BusConnection; msg: Message): uint32 =
   when useValidationLayer:
     case msg.kind
-    of mtMethodCall, mtSignal: validateCommonFields(msg)
-    of mtError: validateErrorMsg(msg)
-    of mtMethodReturn, mtInvalid: validateRequiredHeaders(msg)
+    of MethodCall, Signal: validateCommonFields(msg)
+    of Error: validateErrorMsg(msg)
+    of MethodReturn, Invalid: validateRequiredHeaders(msg)
   let serial = conn.nextSerial
   conn.nextSerial += 1
   msg.serial = serial
@@ -779,7 +779,7 @@ proc wait(conn: BusConnection, call: var PendingCall) =
         conn.receive()
 
     if reply.replySerial != 0:
-      if reply.kind == mtError:
+      if reply.kind == Error:
         var errDetail = reply.errorName
         if reply.body.len > 0 and reply.signature.len > 0 and reply.signature[0] == 's':
           var br = initBodyReader(reply.body, reply.signature)
