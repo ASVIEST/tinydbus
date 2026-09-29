@@ -501,9 +501,19 @@ type
 
     # Unixexec
 
+  UnixBusAddressKind* = enum
+    Unknown
+
+    ByPath
+    Abstract
+    Runtime
+
   UnixBusAddress* = object
-    isAbstract*: bool
-    path*: string # in this object this is path=`path` or abstract=`path`
+    case kind*: UnixBusAddressKind
+    of ByPath, Abstract:
+      path*: string # in this object this is path=`path` or abstract=`path`
+    of Runtime, Unknown:
+      discard
 
   BusAddress* = object
     case transport: BusTransport
@@ -537,10 +547,23 @@ proc parseKeyValue(address: var BusAddress, key: string, value: string) =
     # TODO: add check that only one is correct
     case key
     of "path":
-      address.unix.path = value
+      if address.unix.kind != Unknown:
+        raise newException(ValueError, "You should specify only one of \"path\", \"abstract\"")
+
+      address.unix = UnixBusAddress(kind: ByPath, path: value)
+
     of "abstract":
-      address.unix.path = value
-      address.unix.isAbstract = true
+      if address.unix.kind != Unknown:
+        raise newException(ValueError, "You should specify only one of \"path\", \"abstract\"")
+
+      address.unix = UnixBusAddress(kind: Abstract, path: value)
+
+    of "runtime":
+      raiseAssert "runtime key allowed only for server"
+      assert address.unix.kind == Unknown
+      address.unix = UnixBusAddress(kind: Runtime)
+      if value != "yes":
+        raise newException(ValueError, "Only runtime=yes allowed by specification")
 
   of Tcp: discard
 
@@ -617,8 +640,10 @@ when defined(posix):
 
     let
       sockAddr: SockaddrUn = makeUnixAddr(
-        if address.isAbstract: "\0" & address.path
-        else: address.path)
+        case address.kind
+        of ByPath: address.path
+        of Abstract: "\0" & address.path
+        else: raiseAssert "Not implemented")
       # TODO: IS makeUnixAddr call SAFE with SSO strings?
       sockLen = SockLen(offsetOf(sockAddr, sun_path) + address.path.len + 1)
 
@@ -675,7 +700,7 @@ proc `=sink`(dest: var BusConnection; src: BusConnection) =
 proc connectBus*(address: string): BusConnection =
   let parsedAddress = parseAddress(address)
   assert parsedAddress.transport == Unix
-  if parsedAddress.unix.isAbstract and not defined(linux):
+  if parsedAddress.unix.kind == Abstract and not defined(linux):
     raise newException(
       DbusError,
       "Abstract path in dbus address is linux specific thing")
