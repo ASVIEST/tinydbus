@@ -544,8 +544,15 @@ proc parseKeyValue(address: var BusAddress, key: string, value: string) =
 
   of Tcp: discard
 
+
+# [-0-9A-Za-z_/.\*]
+# https://dbus.freedesktop.org/doc/dbus-specification.html#addresses
+const optionallyEscaped = {
+  '-', '0'..'9', 'A'..'Z', 'a'..'z',
+  '_', '/', '.', '\\', '*'
+}
+
 proc parseAddress(address: string): BusAddress =
-  # TODO: to be spec accurate, we need to add unescaped whitelist
   var transport = none(BusTransport)
 
   for candidate in low(BusTransport)..high(BusTransport):
@@ -571,11 +578,6 @@ proc parseAddress(address: string): BusAddress =
       value = ""
     of '=':
       parsingValue = true
-    of Whitespace:
-      raise newException(
-        ValueError,
-        "Found unescaped ' ' character at position: " & $i &
-        ", use %20")
     of '%':
       let h = char(
         parseHexChar(address[i + 1], i + 1) shl 4 or
@@ -587,16 +589,21 @@ proc parseAddress(address: string): BusAddress =
         key.add h
 
       i += 2
-    else:
+    of optionallyEscaped:
       if parsingValue:
         value.add address[i]
       else:
         key.add address[i]
+    else:
+      raise newException(
+        ValueError,
+        "Found unescaped '" & address[i] & "' character at position: " & $i &
+        ", use %" & toHex(uint8 address[i], 2)
+      )
 
     inc i
 
   result.parseKeyValue(key, value)
-
 
 when defined(posix):
   # we can call this function only in posix because SockaddrUn and makeUnixAddr exported only on posix
