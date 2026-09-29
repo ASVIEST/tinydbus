@@ -28,7 +28,7 @@ suite "intercept API":
     var conn = BusConnection()
     let reply = conn.syncall(msg)
 
-    assert reply.kind == mtMethodReturn
+    assert reply.kind == MethodReturn
     var br = initBodyReader(reply.body, reply.signature)
     check br.read[:uint32]() == 42'u32
 

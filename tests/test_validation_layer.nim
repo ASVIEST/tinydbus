@@ -238,59 +238,59 @@ suite "validateLocalInterface":
 suite "validateRequiredHeaders":
   test "valid METHOD_CALL":
     shouldPass validateRequiredHeaders(Message(
-      kind: mtMethodCall, path: "/foo", member: "Bar"))
+      kind: MethodCall, path: "/foo", member: "Bar"))
 
   test "METHOD_CALL missing path":
     shouldFail validateRequiredHeaders(Message(
-      kind: mtMethodCall, member: "Bar"))
+      kind: MethodCall, member: "Bar"))
 
   test "METHOD_CALL missing member":
     shouldFail validateRequiredHeaders(Message(
-      kind: mtMethodCall, path: "/foo"))
+      kind: MethodCall, path: "/foo"))
 
   test "valid SIGNAL":
     shouldPass validateRequiredHeaders(Message(
-      kind: mtSignal, path: "/foo", iface: "a.b", member: "Sig"))
+      kind: Signal, path: "/foo", iface: "a.b", member: "Sig"))
 
   test "SIGNAL missing interface":
     shouldFail validateRequiredHeaders(Message(
-      kind: mtSignal, path: "/foo", member: "Sig"))
+      kind: Signal, path: "/foo", member: "Sig"))
 
   test "valid ERROR":
     shouldPass validateRequiredHeaders(Message(
-      kind: mtError, errorName: "a.b", replySerial: 1))
+      kind: Error, errorName: "a.b", replySerial: 1))
 
   test "ERROR missing error name":
     shouldFail validateRequiredHeaders(Message(
-      kind: mtError, replySerial: 1))
+      kind: Error, replySerial: 1))
 
   test "valid METHOD_RETURN":
     shouldPass validateRequiredHeaders(Message(
-      kind: mtMethodReturn, replySerial: 1))
+      kind: MethodReturn, replySerial: 1))
 
   test "METHOD_RETURN missing reply serial":
     shouldFail validateRequiredHeaders(Message(
-      kind: mtMethodReturn))
+      kind: MethodReturn))
 
   test "mtInvalid always fails":
-    shouldFail validateRequiredHeaders(Message(kind: mtInvalid))
+    shouldFail validateRequiredHeaders(Message(kind: Invalid))
 
 suite "validateMethodCallMsg (full)":
   test "valid":
     shouldPass validateMethodCallMsg(Message(
-      kind: mtMethodCall, path: "/foo", member: "Bar",
+      kind: MethodCall, path: "/foo", member: "Bar",
       destination: "org.example.Bus", iface: "org.example.Iface",
       signature: "s"))
 
   test "invalid path in message":
     shouldFail validateMethodCallMsg(Message(
-      kind: mtMethodCall, path: "bad", member: "Bar"))
+      kind: MethodCall, path: "bad", member: "Bar"))
 
   test "reserved local path":
     shouldFail validateMethodCallMsg(Message(
-      kind: mtMethodCall, path: "/org/freedesktop/DBus/Local", member: "Bar"))
+      kind: MethodCall, path: "/org/freedesktop/DBus/Local", member: "Bar"))
 
   test "reserved local interface":
     shouldFail validateMethodCallMsg(Message(
-      kind: mtMethodCall, path: "/foo", member: "Bar",
+      kind: MethodCall, path: "/foo", member: "Bar",
       iface: "org.freedesktop.DBus.Local"))

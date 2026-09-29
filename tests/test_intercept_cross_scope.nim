@@ -28,7 +28,7 @@ suite "intercept cross-scope":
       var conn: BusConnection
       let reply = conn.syncall(msg)
 
-      check reply.kind == mtMethodReturn
+      check reply.kind == MethodReturn
       var br = initBodyReader(reply.body, reply.signature)
       check br.read[:uint32]() == 100'u32
 
@@ -49,7 +49,7 @@ suite "intercept cross-scope":
       var conn = BusConnection()
       let reply = conn.syncall(msg)
 
-      check reply.kind == mtMethodReturn
+      check reply.kind == MethodReturn
       var br = initBodyReader(reply.body, reply.signature)
       check br.read[:uint32]() == 100'u32
 
