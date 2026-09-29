@@ -9,11 +9,6 @@ const useValidationLayer* =
 when defined(posix):
   import std/posix
 
-  type SockaddrUn {.importc: "struct sockaddr_un",
-                    header: "<sys/un.h>".} = object
-    sun_family {.importc.}: cushort
-    sun_path {.importc.}: array[108, char]
-
   const MsgNosignal {.importc: "MSG_NOSIGNAL", header: "<sys/socket.h>".}: cint = 0x4000
 
 type
@@ -536,7 +531,21 @@ proc parseHexChar(c: char, position: int): uint8 =
   else:
     raise newException(ValueError, "Invalid hex char at position: " & $position)
 
+proc parseKeyValue(address: var BusAddress, key: string, value: string) =
+  case address.transport
+  of Unix:
+    # TODO: add check that only one is correct
+    case key
+    of "path":
+      address.unix.path = value
+    of "abstract":
+      address.unix.path = value
+      address.unix.isAbstract = true
+
+  of Tcp: discard
+
 proc parseAddress(address: string): BusAddress =
+  # TODO: to be spec accurate, we need to add unescaped whitelist
   var transport = none(BusTransport)
 
   for candidate in low(BusTransport)..high(BusTransport):
@@ -556,7 +565,7 @@ proc parseAddress(address: string): BusAddress =
   while i < address.len:
     case address[i]
     of ',':
-      echo key, "=", value
+      result.parseKeyValue(key, value)
       parsingValue = false
       key = ""
       value = ""
@@ -566,13 +575,11 @@ proc parseAddress(address: string): BusAddress =
       raise newException(
         ValueError,
         "Found unescaped ' ' character at position: " & $i &
-        ", use %20"
-      )
+        ", use %20")
     of '%':
       let h = char(
         parseHexChar(address[i + 1], i + 1) shl 4 or
-        parseHexChar(address[i + 2], i + 2)
-      )
+        parseHexChar(address[i + 2], i + 2))
 
       if parsingValue:
         value.add h
@@ -588,23 +595,33 @@ proc parseAddress(address: string): BusAddress =
 
     inc i
 
-# var z = parseAddress("unix:path=/tmp/my%20bus%2Ctest")
+  result.parseKeyValue(key, value)
 
-proc connectUnixSocket(address: UnixBusAddress): SocketHandle =
-  let fd = createNativeSocket(Domain.AF_UNIX, SockType.SOCK_STREAM,
-                              Protocol.IPPROTO_IP)
-  if fd == osInvalidSocket:
-    raise newException(DbusError, "socket() failed")
-  var sa: SockaddrUn
-  sa.sun_family = cushort(posix.AF_UNIX)
-  let offset = int(address.isAbstract)
-  for i in 0 ..< min(address.path.len, sizeof(sa.sun_path) - 1 - offset):
-    sa.sun_path[i + offset] = address.path[i]
-  let addrLen = SockLen(2 + offset + address.path.len + ord(not address.isAbstract))
-  if posix.connect(fd, cast[ptr SockAddr](addr sa), addrLen) != 0:
-    fd.close()
-    raise newException(DbusError, "connect() failed: " & $strerror(errno))
-  fd
+
+when defined(posix):
+  # we can call this function only in posix because SockaddrUn and makeUnixAddr exported only on posix
+  proc connectUnixSocket(address: UnixBusAddress): SocketHandle =
+    let fd = createNativeSocket(
+      Domain.AF_UNIX, SockType.SOCK_STREAM,
+      Protocol.IPPROTO_IP)
+
+    if fd == osInvalidSocket:
+      raise newException(DbusError, "socket() failed")
+
+    let
+      sockAddr: SockaddrUn = makeUnixAddr(
+        if address.isAbstract: "\0" & address.path
+        else: address.path)
+      # TODO: IS makeUnixAddr call SAFE with SSO strings?
+      sockLen = SockLen(offsetOf(sockAddr, sun_path) + address.path.len + 1)
+
+    if posix.connect(fd, cast[ptr SockAddr](addr sockAddr), sockLen) != 0:
+      fd.close()
+      raise newException(
+        DbusError,
+        "connect() to " & $address.path & " failed: " & $strerror(errno))
+
+    fd
 
 proc uidHex(): string =
   for c in $posix.getuid():
@@ -651,7 +668,17 @@ proc `=sink`(dest: var BusConnection; src: BusConnection) =
 proc connectBus*(address: string): BusConnection =
   let parsedAddress = parseAddress(address)
   assert parsedAddress.transport == Unix
-  let fd = connectUnixSocket(parsedAddress.unix)
+  if parsedAddress.unix.isAbstract and not defined(linux):
+    raise newException(
+      DbusError,
+      "Abstract path in dbus address is linux specific thing")
+
+  let fd =
+    when defined(posix):
+      connectUnixSocket(parsedAddress.unix)
+    else:
+      {.error: "Unsupported platform".}
+
   authenticate(fd)
   BusConnection(fd: fd, nextSerial: 1, pending: initTable[uint32, Message]())
 
