@@ -160,6 +160,7 @@ proc get(r: var Reader; T: type bool): bool {.inline.} =
   when useValidationLayer:
     validateBoolean(v)
   v != 0
+
 proc get(r: var Reader; T: type float64): float64 {.inline.} = cast[float64](r.get(uint64))
 
 proc getStr(r: var Reader; lenSize: static int): string =
@@ -459,16 +460,23 @@ proc recvAll(fd: SocketHandle; buf: pointer; count: int) =
 proc sendAll(fd: SocketHandle; buf: pointer; count: int) =
   var offset = 0
   while offset < count:
-    let n = send(fd, cast[pointer](cast[int](buf) + offset),
-                 count - offset, MsgNosignal)
+    let n = send(
+      fd, cast[pointer](cast[int](buf) + offset),
+      count - offset, MsgNosignal)
     if n <= 0: raise newException(DbusError, "send failed")
     offset += int(n)
 
 proc sendAll(fd: SocketHandle; data: seq[byte]) =
-  if data.len > 0: sendAll(fd, addr data[0], data.len)
+  if data.len > 0:
+    sendAll(fd, addr data[0], data.len)
 
 proc sendAll(fd: SocketHandle; s: string) =
-  if s.len > 0: sendAll(fd, addr s[0], s.len)
+  if s.len > 0:
+    when (NimMajor, NimMinor, NimPatch) >= (2, 4, 0):
+      # see https://forum.nim-lang.org/t/14043
+      sendAll(fd, readRawData(s), s.len)
+    else:
+      sendAll(fd, addr s[0], s.len)
 
 proc recvLine(fd: SocketHandle): string =
   var c: char
@@ -770,7 +778,7 @@ proc receive*(conn: BusConnection): Message =
     recvAll(conn.fd, addr fullMsg[16], totalSize - 16)
   deserialize(fullMsg)
 
-proc wait(conn: BusConnection, call: var PendingCall) =
+proc wait*(conn: BusConnection, call: var PendingCall) =
   while true:
     let reply =
       if call.callSerial in conn.pending:
